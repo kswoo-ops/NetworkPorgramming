@@ -49,7 +49,7 @@ public class LobbyScreen extends JFrame {
     // ----- 화면 구성 (초기 코드 구조 완벽 복원) -----
     private JPanel buildLeftPanel() {
         JPanel left = new JPanel(new BorderLayout(0, 5));
-        JLabel title = new JLabel("플레이어", JLabel.CENTER);   
+        JLabel title = new JLabel("플레이어", JLabel.CENTER);
         title.setFont(new Font("SansSerif", Font.BOLD, 16));
         userListPanel.setLayout(new BoxLayout(userListPanel, BoxLayout.Y_AXIS));
         JScrollPane sp = new JScrollPane(userListPanel);
@@ -170,12 +170,12 @@ public class LobbyScreen extends JFrame {
             SketchMessage msg = (SketchMessage) obj;
             if ("GAME_START".equals(msg.getType())) {
                 // 게임 시작 시 대기실 창을 닫고 ClientEx 게임 메인 화면으로 매끄럽게 전환
+                running = false;
                 SwingUtilities.invokeLater(() -> {
-                    dispose(); 
+                    dispose();
                     ClientEx gameScreen = new ClientEx(socket, out, in, myName);
                     gameScreen.handleGameStart(msg);
                     gameScreen.setVisible(true);
-                    running=false;
                 });
             }
         }
@@ -200,7 +200,10 @@ public class LobbyScreen extends JFrame {
             for (int i = 0; i < names.size(); i++) {
                 boolean r = ready.get(i);
                 if (r) readyCount++;
-                if (names.get(i).equals(myName)) { me = true; isReady = r; }
+                if (names.get(i).equals(myName)) {
+                    me = true;
+                    isReady = r;
+                }
                 userListPanel.add(makeUserRow(names.get(i), r));
                 userListPanel.add(Box.createVerticalStrut(6));
             }

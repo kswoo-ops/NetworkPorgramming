@@ -6,7 +6,7 @@ import java.util.*;
 
 public class ServerEx {
     private static final int PORT = 5000;
-    private static List<ClientHandler> clients = new ArrayList<>();
+    private static final List<ClientHandler> clients = new ArrayList<>();
     private static final String[] WORDS = {"감자", "김치", "아이스크림", "바나나", "자전거", "컴퓨터", "축구공", "피아노"};
 
     public static void main(String[] args) {
@@ -25,8 +25,27 @@ public class ServerEx {
         }
     }
 
-    // 💡 모든 접속자에게 현재 플레이어 목록과 준비 상태를 브로드캐스트하는 메서드
+    private static void sendToClient(ClientHandler c, Object obj) {
+        if (c == null || c.writer == null || obj == null) {
+            return;
+        }
+        synchronized (c.writer) {
+            try {
+                c.writer.writeObject(obj);
+                c.writer.flush();
+                c.writer.reset();
+            } catch (IOException e) {
+                System.out.println("[전송 실패] " + c.nickName + " : " + e.getMessage());
+                c.closeQuietly();
+            }
+        }
+    }
+
+    // 모든 접속자에게 현재 플레이어 목록과 준비 상태를 브로드캐스트하는 메서드
     public static void broadcastUserList() {
+        List<ClientHandler> snapshot;
+        String userListMsg;
+
         synchronized (clients) {
             StringBuilder sb = new StringBuilder("USERS:");
             for (int i = 0; i < clients.size(); i++) {
@@ -36,17 +55,12 @@ public class ServerEx {
                     sb.append(",");
                 }
             }
-            
-            String userListMsg = sb.toString();
-            for (ClientHandler c : clients) {
-                try {
-                    c.writer.writeObject(userListMsg);
-                    c.writer.flush();
-                    c.writer.reset();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }
+            userListMsg = sb.toString();
+            snapshot = new ArrayList<>(clients);
+        }
+
+        for (ClientHandler c : snapshot) {
+            sendToClient(c, userListMsg);
         }
     }
 
@@ -54,12 +68,12 @@ public class ServerEx {
         private Socket socket;
         private ObjectInputStream reader;
         private ObjectOutputStream writer;
-        
-        private String clientId = UUID.randomUUID().toString(); 
+
+        private String clientId = UUID.randomUUID().toString();
         private String nickName = "손님";
         private List<byte[]> currentBookPages = new ArrayList<>();
-        private List<String> currentTextContents = new ArrayList<>(); 
-        private String currentBookOwnerId; 
+        private List<String> currentTextContents = new ArrayList<>();
+        private String currentBookOwnerId;
         private boolean isReady = false;
         private boolean readyToSwap = false;
         public boolean isSlideReady = false;
@@ -69,10 +83,21 @@ public class ServerEx {
             this.currentBookOwnerId = this.clientId;
         }
 
+        private void closeQuietly() {
+            try {
+                if (socket != null && !socket.isClosed()) {
+                    socket.close();
+                }
+            } catch (IOException ignored) {
+            }
+        }
+
+        @Override
         public void run() {
             try {
                 writer = new ObjectOutputStream(socket.getOutputStream());
                 writer.flush();
+                writer.reset();
                 reader = new ObjectInputStream(socket.getInputStream());
 
                 Object obj;
@@ -82,23 +107,22 @@ public class ServerEx {
 
                         // 1. 접속 시 "JOIN:닉네임" 처리
                         if (msgStr.startsWith("JOIN:")) {
-                            this.nickName = msgStr.substring(5);
-                            writer.writeObject("JOIN_OK");
-                            writer.flush();
-                            writer.reset();
+                            String parsedNick = msgStr.substring(5).trim();
+                            this.nickName = parsedNick.isEmpty() ? "손님" : parsedNick;
+                            sendToClient(this, "JOIN_OK");
                             System.out.println("[접속 성공] " + nickName);
-                            ServerEx.broadcastUserList(); // 접속자 목록 갱신 전송
+                            ServerEx.broadcastUserList();
                         }
                         // 2. 대기실 채팅 처리
                         else if (msgStr.startsWith("CHAT:")) {
                             String chatContent = msgStr.substring(5);
                             String broadcastChat = "CHAT:" + nickName + ":" + chatContent;
+                            List<ClientHandler> snapshot;
                             synchronized (clients) {
-                                for (ClientHandler c : clients) {
-                                    c.writer.writeObject(broadcastChat);
-                                    c.writer.flush();
-                                    c.writer.reset();
-                                }
+                                snapshot = new ArrayList<>(clients);
+                            }
+                            for (ClientHandler c : snapshot) {
+                                sendToClient(c, broadcastChat);
                             }
                         }
                         // 3. 게임 준비 완료 처리
@@ -106,43 +130,43 @@ public class ServerEx {
                             this.isReady = true;
                             ServerEx.broadcastUserList();
 
+                            List<ClientHandler> snapshot;
+                            boolean allReady = true;
                             synchronized (clients) {
-                                boolean allReady = true;
-                                for (ClientHandler c : clients) {
-                                    if (!c.isReady) { allReady = false; break; }
-                                }
-
-                                if (allReady && clients.size() >= 2) {
-                                    Random rand = new Random();
-                                    int totalPlayers = clients.size();
-                                    
-                                    System.out.println("[게임 시작] 총 " + totalPlayers + "명 참여");
-                                    for (int i = 0; i < totalPlayers; i++) {
-                                        ClientHandler c = clients.get(i);
-                                        String assignedWord = WORDS[rand.nextInt(WORDS.length)];
-                                        
-                                        c.currentBookOwnerId = c.clientId;
-                                        c.currentBookPages = new ArrayList<>();
-                                        c.currentTextContents = new ArrayList<>();
-                                        
-                                        SketchMessage startMsg = new SketchMessage("GAME_START", c.currentBookPages, 0, c.currentBookOwnerId);
-                                        startMsg.setSecretWord(assignedWord);
-                                        
-                                        c.writer.writeObject(startMsg);
-                                        c.writer.flush();
-                                        c.writer.reset();
+                                snapshot = new ArrayList<>(clients);
+                                for (ClientHandler c : snapshot) {
+                                    if (!c.isReady) {
+                                        allReady = false;
+                                        break;
                                     }
-                                } else if (allReady && clients.size() < 2) {
-                                    writer.writeObject("NOTIFY:게임을 시작하려면 최소 2명 이상 필요합니다.");
-                                    writer.flush();
-                                    writer.reset();
-                                    this.isReady = false;
-                                    ServerEx.broadcastUserList();
-                                } else {
-                                    writer.writeObject("NOTIFY:다른 참가자들의 준비를 기다리는 중...");
-                                    writer.flush();
-                                    writer.reset();
                                 }
+                            }
+
+                            if (allReady && snapshot.size() >= 2) {
+                                Random rand = new Random();
+                                int totalPlayers = snapshot.size();
+                                System.out.println("[게임 시작] 총 " + totalPlayers + "명 참여");
+
+                                for (int i = 0; i < totalPlayers; i++) {
+                                    ClientHandler c = snapshot.get(i);
+                                    String assignedWord = WORDS[rand.nextInt(WORDS.length)];
+
+                                    c.currentBookOwnerId = c.clientId;
+                                    c.currentBookPages = new ArrayList<>();
+                                    c.currentTextContents = new ArrayList<>();
+                                    c.readyToSwap = false;
+
+                                    SketchMessage startMsg = new SketchMessage(
+                                            "GAME_START", c.currentBookPages, 0, c.currentBookOwnerId);
+                                    startMsg.setSecretWord(assignedWord);
+                                    sendToClient(c, startMsg);
+                                }
+                            } else if (allReady && snapshot.size() < 2) {
+                                sendToClient(this, "NOTIFY:게임을 시작하려면 최소 2명 이상 필요합니다.");
+                                this.isReady = false;
+                                ServerEx.broadcastUserList();
+                            } else {
+                                sendToClient(this, "NOTIFY:다른 참가자들의 준비를 기다리는 중...");
                             }
                         }
                         // 4. 게임 준비 취소 처리
@@ -153,136 +177,148 @@ public class ServerEx {
 
                     } else if (obj instanceof SketchMessage) {
                         SketchMessage msg = (SketchMessage) obj;
-                        
+
                         if ("PASS_PAGE".equals(msg.getType())) {
-                            this.currentBookPages = msg.getAllPagesData();
-                            this.currentTextContents = msg.getTextContents(); 
-                            this.currentBookOwnerId = msg.getOwnerId();
+                            this.currentBookPages = (msg.getAllPagesData() != null)
+                                    ? new ArrayList<>(msg.getAllPagesData())
+                                    : new ArrayList<>();
+                            this.currentTextContents = (msg.getTextContents() != null)
+                                    ? new ArrayList<>(msg.getTextContents())
+                                    : new ArrayList<>();
+                            if (msg.getOwnerId() != null) {
+                                this.currentBookOwnerId = msg.getOwnerId();
+                            }
                             this.readyToSwap = true;
 
+                            List<ClientHandler> snapshot;
+                            boolean allReady = true;
                             synchronized (clients) {
-                                boolean allReady = true;
-                                for (ClientHandler c : clients) {
-                                    if (!c.readyToSwap) { allReady = false; break; }
+                                snapshot = new ArrayList<>(clients);
+                                for (ClientHandler c : snapshot) {
+                                    if (!c.readyToSwap) {
+                                        allReady = false;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (allReady && !snapshot.isEmpty()) {
+                                int size = snapshot.size();
+
+                                class BookUnit {
+                                    final List<byte[]> pages;
+                                    final List<String> texts;
+                                    final String ownerId;
+
+                                    BookUnit(List<byte[]> p, List<String> t, String o) {
+                                        pages = p;
+                                        texts = t;
+                                        ownerId = o;
+                                    }
                                 }
 
-                                if (allReady) {
-                                    int size = clients.size();
-                                    
-                                    class BookUnit {
-                                        List<byte[]> pages;
-                                        List<String> texts;
-                                        String ownerId;
-                                        BookUnit(List<byte[]> p, List<String> t, String o) { 
-                                            pages = p; texts = t; ownerId = o; 
-                                        }
+                                BookUnit[] incoming = new BookUnit[size];
+                                for (int i = 0; i < size; i++) {
+                                    ClientHandler c = snapshot.get(i);
+                                    incoming[i] = new BookUnit(
+                                            c.currentBookPages, c.currentTextContents, c.currentBookOwnerId);
+                                }
+
+                                BookUnit[] rotated = new BookUnit[size];
+                                for (int i = 0; i < size; i++) {
+                                    int nextIndex = (i + 1) % size;
+                                    rotated[nextIndex] = incoming[i];
+                                }
+
+                                boolean isAllGameCompleted = true;
+
+                                for (int i = 0; i < size; i++) {
+                                    ClientHandler c = snapshot.get(i);
+                                    BookUnit u = rotated[i];
+                                    c.currentBookPages = u.pages;
+                                    c.currentTextContents = u.texts;
+                                    c.currentBookOwnerId = u.ownerId;
+
+                                    boolean isCompleted = u.ownerId != null && u.ownerId.equals(c.clientId);
+                                    if (!isCompleted) {
+                                        isAllGameCompleted = false;
                                     }
 
-                                    BookUnit[] incoming = new BookUnit[size];
-                                    for (int i = 0; i < size; i++) {
-                                        ClientHandler c = clients.get(i);
-                                        incoming[i] = new BookUnit(c.currentBookPages, c.currentTextContents, c.currentBookOwnerId);
-                                    }
+                                    int nextPageIndex = u.pages.size();
 
-                                    BookUnit[] rotated = new BookUnit[size];
-                                    for (int i = 0; i < size; i++) {
-                                        int nextIndex = (i + 1) % size;
-                                        rotated[nextIndex] = incoming[i];
-                                    }
+                                    SketchMessage outMsg = new SketchMessage(
+                                            "RECEIVE_BOOK", u.pages, nextPageIndex, u.ownerId);
+                                    outMsg.setCompleted(isCompleted);
+                                    outMsg.setTextContents(u.texts);
 
-                                    boolean isAllGameCompleted = true; // 게임 전체 종료 여부 체크
+                                    c.readyToSwap = false;
+                                    sendToClient(c, outMsg);
+                                }
 
-                                    for (int i = 0; i < size; i++) {
-                                        ClientHandler c = clients.get(i);
-                                        BookUnit u = rotated[i];
-                                        c.currentBookPages = u.pages;
-                                        c.currentTextContents = u.texts;
-                                        c.currentBookOwnerId = u.ownerId;
+                                if (isAllGameCompleted) {
+                                    new java.util.Timer().schedule(new java.util.TimerTask() {
+                                        private int currentBookIdx = 0;
+                                        private int currentPageIdx = 0;
 
-                                        boolean isCompleted = u.ownerId.equals(c.clientId);
-                                        if (!isCompleted) {
-                                            isAllGameCompleted = false; // 아직 제 주인에게 안 돌아왔다면 게임 진행 중
-                                        }
+                                        @Override
+                                        public void run() {
+                                            List<ClientHandler> slideSnapshot;
+                                            synchronized (clients) {
+                                                slideSnapshot = new ArrayList<>(clients);
+                                            }
+                                            if (slideSnapshot.isEmpty()) {
+                                                this.cancel();
+                                                return;
+                                            }
 
-                                        int nextPageIndex = u.pages.size();
+                                            if (currentBookIdx >= slideSnapshot.size()) {
+                                                SketchMessage endMsg = new SketchMessage("SLIDE_END", null);
+                                                for (ClientHandler c : slideSnapshot) {
+                                                    sendToClient(c, endMsg);
+                                                }
+                                                this.cancel();
+                                                return;
+                                            }
 
-                                        SketchMessage outMsg = new SketchMessage("RECEIVE_BOOK", u.pages, nextPageIndex, u.ownerId);
-                                        outMsg.setCompleted(isCompleted);
-                                        outMsg.setTextContents(u.texts); 
+                                            ClientHandler targetClient = slideSnapshot.get(currentBookIdx);
+                                            List<byte[]> pages = targetClient.currentBookPages;
 
-                                        c.writer.writeObject(outMsg);
-                                        c.writer.reset();
-                                        c.writer.flush();
-                                       
-                                        c.readyToSwap = false;
-                                    }
+                                            if (pages != null && currentPageIdx < pages.size()) {
+                                                byte[] pageImgBytes = pages.get(currentPageIdx);
+                                                if (pageImgBytes != null && pageImgBytes.length > 0) {
+                                                    SketchMessage slideMsg = new SketchMessage("SHOW_SLIDE", pageImgBytes);
+                                                    slideMsg.setOwnerId(targetClient.clientId);
+                                                    slideMsg.setSlideInfo(currentBookIdx, currentPageIdx, pages.size());
 
-                                    // 💡 모든 스케치북이 한 바퀴를 완전히 돌아 원래 주인에게 돌아갔을 때만 슬라이드쇼 시작!
-                                    if (isAllGameCompleted) {
-                                        new java.util.Timer().schedule(new java.util.TimerTask() {
-                                            private int currentBookIdx = 0;
-                                            private int currentPageIdx = 0;
-
-                                            @Override
-                                            public void run() {
-                                                synchronized (clients) {
-                                                    if (currentBookIdx >= clients.size()) {
-                                                        SketchMessage endMsg = new SketchMessage("SLIDE_END", null);
-                                                        for (ClientHandler c : clients) {
-                                                            try {
-                                                                c.writer.writeObject(endMsg);
-                                                                c.writer.flush();
-                                                                c.writer.reset();
-                                                            } catch (IOException e) { e.printStackTrace(); }
-                                                        }
-                                                        this.cancel();
-                                                        return;
-                                                    }
-
-                                                    ClientHandler targetClient = clients.get(currentBookIdx);
-                                                    List<byte[]> pages = targetClient.currentBookPages;
-
-                                                    if (currentPageIdx < pages.size()) {
-                                                        byte[] pageImgBytes = pages.get(currentPageIdx);
-                                                        
-                                                        SketchMessage slideMsg = new SketchMessage("SHOW_SLIDE", pageImgBytes);
-                                                        slideMsg.setOwnerId(targetClient.clientId);
-                                                        slideMsg.setSlideInfo(currentBookIdx, currentPageIdx, pages.size());
-
-                                                        for (ClientHandler c : clients) {
-                                                            try {
-                                                                c.writer.writeObject(slideMsg);
-                                                                c.writer.flush();
-                                                                c.writer.reset();
-                                                            } catch (IOException e) { e.printStackTrace(); }
-                                                        }
-                                                        currentPageIdx++;
-                                                    } else {
-                                                        currentPageIdx = 0;
-                                                        currentBookIdx++;
+                                                    for (ClientHandler c : slideSnapshot) {
+                                                        sendToClient(c, slideMsg);
                                                     }
                                                 }
+                                                currentPageIdx++;
+                                            } else {
+                                                currentPageIdx = 0;
+                                                currentBookIdx++;
                                             }
-                                        }, 5000, 1500); 
-                                    }
-
-                                } else {
-                                    writer.writeObject("NOTIFY:모든 참가자가 페이지 작성을 마칠 때까지 대기 중입니다...");
-                                    writer.flush();
-                                    writer.reset();
+                                        }
+                                    }, 5000, 1500);
                                 }
+                            } else {
+                                sendToClient(this, "NOTIFY:모든 참가자가 페이지 작성을 마칠 때까지 대기 중입니다...");
                             }
                         }
                     }
                 }
+            } catch (EOFException e) {
+                System.out.println("[연결 종료 - EOF] " + nickName);
             } catch (Exception e) {
-                System.out.println("[연결 종료] " + nickName);
+                System.out.println("[연결 종료 - 오류] " + nickName);
+                e.printStackTrace();
             } finally {
                 synchronized (clients) {
                     clients.remove(this);
                 }
-                ServerEx.broadcastUserList(); // 나간 사람 반영해서 대기실 목록 갱신
-                try { socket.close(); } catch (IOException e) {}
+                ServerEx.broadcastUserList();
+                closeQuietly();
             }
         }
     }
