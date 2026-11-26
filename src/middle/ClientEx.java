@@ -11,6 +11,13 @@ import java.util.*;
 import java.util.List;
 
 public class ClientEx extends JFrame {
+    private static final String BACKGROUND_PATH = "/image/mainGameBackground.png";
+    private static final Color INK = new Color(76, 53, 83);
+    private static final Color PAPER = new Color(250, 241, 215, 205);
+    private static final Color EDGE = new Color(173, 142, 125, 180);
+    private final BufferedImage themeBackground = loadBackground();
+    private final BufferedImage grain = createGrain();
+
     private Socket socket;                  // 💡 대기실에서 전달받을 소켓
     private ObjectOutputStream out;         // 💡 대기실에서 전달받을 출력 스트림
     private ObjectInputStream in;           // 💡 대기실에서 전달받을 입력 스트림
@@ -62,22 +69,44 @@ public class ClientEx extends JFrame {
         setTitle("텔레스트레이션 릴레이 스케치북 [" + (myNick != null ? myNick : "플레이어") + "]");
         setSize(1050, 700);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
-        setLayout(new BorderLayout());
+        setContentPane(new JPanel(new BorderLayout(10, 10)) {
+            @Override protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                Graphics2D gg = (Graphics2D) g.create();
+                gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                gg.setPaint(new GradientPaint(0, 0, new Color(211, 177, 224), getWidth(), getHeight(), new Color(250, 207, 219)));
+                gg.fillRect(0, 0, getWidth(), getHeight());
+                if (themeBackground != null) {
+                    double scale = Math.max((double)getWidth()/themeBackground.getWidth(), (double)getHeight()/themeBackground.getHeight());
+                    int w = (int)Math.ceil(themeBackground.getWidth()*scale), h = (int)Math.ceil(themeBackground.getHeight()*scale);
+                    gg.drawImage(themeBackground, (getWidth()-w)/2, (getHeight()-h)/2, w, h, this);
+                }
+                gg.dispose();
+            }
+        });
+        ((JComponent)getContentPane()).setBorder(BorderFactory.createEmptyBorder(14, 18, 14, 18));
 
         cardLayout = new CardLayout();
         centerCardPanel = new JPanel(cardLayout);
+        centerCardPanel.setOpaque(false);
         add(centerCardPanel, BorderLayout.CENTER);
 
         addNewPageLocally("DRAW", null, "");
 
-        JPanel topPanel = new JPanel();
+        JPanel topPanel = new PaperPanel(new FlowLayout(FlowLayout.CENTER, 10, 12));
         wordLabel = new JLabel("🎯 내 제시어: [게임 준비 후 공개됩니다]");
         wordLabel.setFont(new Font("SansSerif", Font.BOLD, 16));
         wordLabel.setForeground(Color.DARK_GRAY);
         topPanel.add(wordLabel);
         add(topPanel, BorderLayout.NORTH);
 
-        JPanel controlPanel = new JPanel();
+        JPanel controlPanel = new PaperPanel(new GridLayout(2, 1, 0, 4));
+        JPanel tools = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 3));
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 3));
+        tools.setOpaque(false);
+        actions.setOpaque(false);
+        controlPanel.add(tools);
+        controlPanel.add(actions);
         
         JButton blackBtn = new JButton("검정");
         blackBtn.setForeground(Color.BLACK);
@@ -114,17 +143,20 @@ public class ClientEx extends JFrame {
         passButton.setEnabled(false);
         passButton.setBackground(new Color(100, 200, 100));
 
-        controlPanel.add(blackBtn);
-        controlPanel.add(redBtn);
-        controlPanel.add(blueBtn);
-        controlPanel.add(Box.createHorizontalStrut(10));
-        controlPanel.add(viewPrevButton);
-        controlPanel.add(goMyPageButton); 
-        controlPanel.add(Box.createHorizontalStrut(10));
-        controlPanel.add(infoLabel);
-        controlPanel.add(Box.createHorizontalStrut(10));
-        controlPanel.add(passButton);
+        tools.add(blackBtn);
+        tools.add(redBtn);
+        tools.add(blueBtn);
+        tools.add(viewPrevButton);
+        tools.add(goMyPageButton); 
+        actions.add(infoLabel);
+        actions.add(passButton);
         
+        for (JButton b : new JButton[]{blackBtn, redBtn, blueBtn, viewPrevButton, goMyPageButton, passButton}) styleButton(b);
+        blackBtn.setForeground(Color.BLACK);
+        redBtn.setForeground(new Color(180, 48, 68));
+        blueBtn.setForeground(new Color(48, 82, 160));
+        infoLabel.setForeground(INK);
+        wordLabel.setForeground(INK);
         add(controlPanel, BorderLayout.SOUTH);
 
         passButton.addActionListener(e -> {
@@ -288,7 +320,7 @@ public class ClientEx extends JFrame {
     }
 
     private void showSlideImageOnScreen(BufferedImage img, String ownerId, int bookNum, int pageNum) {
-        JPanel slideViewPanel = new JPanel(new BorderLayout());
+        JPanel slideViewPanel = new PaperPanel(new BorderLayout(0, 8));
         
         JLabel infoLabel = new JLabel("📖 [" + bookNum + "번째 스케치북] (작성자 ID: " + ownerId.substring(0, Math.min(6, ownerId.length())) + "...) - " + pageNum + "번째 페이지 감상 중", JLabel.CENTER);
         infoLabel.setFont(new Font("SansSerif", Font.BOLD, 16));
@@ -301,11 +333,11 @@ public class ClientEx extends JFrame {
                 if (img != null) {
                     int x = (getWidth() - img.getWidth()) / 2;
                     int y = (getHeight() - img.getHeight()) / 2;
-                    g.drawImage(img, Math.max(0, x), Math.max(0, y), this);
+                    paintOnPaper(g, img, Math.max(0, x), Math.max(0, y));
                 }
             }
         };
-        drawArea.setBackground(Color.WHITE);
+        drawArea.setOpaque(false);
 
         slideViewPanel.add(infoLabel, BorderLayout.NORTH);
         slideViewPanel.add(drawArea, BorderLayout.CENTER);
@@ -393,15 +425,17 @@ public class ClientEx extends JFrame {
     }
 
     private JPanel createPagePanel(String type, BufferedImage img, int index, String initialText) {
-        JPanel panel = new JPanel(new BorderLayout());
+        JPanel panel = new PaperPanel(new BorderLayout(0, 8));
         if ("DRAW".equals(type)) {
             DrawingPanel drawP = new DrawingPanel(index);
             panel.add(drawP, BorderLayout.CENTER);
             JLabel hint = new JLabel("🎨 [그림 그리기] 앞사람이 적은 글자를 보고 그림으로 표현하세요!", JLabel.CENTER);
             hint.setFont(new Font("SansSerif", Font.BOLD, 14));
+            hint.setForeground(INK);
             panel.add(hint, BorderLayout.NORTH);
         } else {
             JPanel textHolder = new JPanel(new GridBagLayout());
+            textHolder.setOpaque(false);
             JTextArea textArea = new JTextArea(4, 25);
             textArea.setFont(new Font("SansSerif", Font.BOLD, 22));
             textArea.setLineWrap(true);
@@ -415,8 +449,19 @@ public class ClientEx extends JFrame {
             
             JLabel hint = new JLabel("✍️ [글자 적기] 앞사람이 그린 그림을 보고 무엇인지 글자로 적어주세요!", JLabel.CENTER);
             hint.setFont(new Font("SansSerif", Font.BOLD, 14));
+            hint.setForeground(INK);
             
-            textHolder.add(new JScrollPane(textArea));
+            textArea.setOpaque(false);
+            textArea.setForeground(INK);
+            textArea.setCaretColor(INK);
+            textArea.setBorder(BorderFactory.createEmptyBorder(16, 16, 16, 16));
+            JScrollPane scroll = new JScrollPane(textArea);
+            scroll.setOpaque(false);
+            scroll.getViewport().setOpaque(false);
+            scroll.setBorder(BorderFactory.createLineBorder(EDGE));
+            PaperPanel writingPaper = new PaperPanel(new BorderLayout());
+            writingPaper.add(scroll);
+            textHolder.add(writingPaper);
             panel.add(hint, BorderLayout.NORTH);
             panel.add(textHolder, BorderLayout.CENTER);
         }
@@ -466,11 +511,89 @@ public class ClientEx extends JFrame {
         }
     }
 
+
+    // Theme assets: project working directory, src/middle, or classpath.
+    private BufferedImage loadBackground() {
+        String[] fileCandidates = {
+                BACKGROUND_PATH,
+                "src/middle/" + BACKGROUND_PATH,
+                "middle/" + BACKGROUND_PATH,
+                "/mnt/data/ghostwriter_images/context/b28cf400-7bfb-544e-a074-bc0a00305a12.png"
+        };
+        for (String path : fileCandidates) {
+            try {
+                File f = new File(path);
+                if (f.isFile()) {
+                    BufferedImage img = ImageIO.read(f);
+                    if (img != null) return img;
+                }
+            } catch (IOException ignored) { }
+        }
+        String[] resourceCandidates = {"/" + BACKGROUND_PATH, "/middle/" + BACKGROUND_PATH};
+        for (String path : resourceCandidates) {
+            try (InputStream stream = getClass().getResourceAsStream(path)) {
+                if (stream != null) {
+                    BufferedImage img = ImageIO.read(stream);
+                    if (img != null) return img;
+                }
+            } catch (IOException ignored) { }
+        }
+        return null;
+    }
+
+    private BufferedImage createGrain() {
+        BufferedImage tile = new BufferedImage(128, 128, BufferedImage.TYPE_INT_ARGB);
+        Random random = new Random(42);
+        for (int y = 0; y < 128; y++) for (int x = 0; x < 128; x++) {
+            int v = random.nextBoolean() ? 75 : 255;
+            tile.setRGB(x, y, new Color(v, v, v, random.nextInt(19)).getRGB());
+        }
+        return tile;
+    }
+
+    private class PaperPanel extends JPanel {
+        PaperPanel(LayoutManager layout) {
+            super(layout);
+            setOpaque(false);
+            setBorder(BorderFactory.createEmptyBorder(10, 12, 10, 12));
+        }
+        @Override protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D gg = (Graphics2D) g.create();
+            gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            java.awt.geom.RoundRectangle2D shape = new java.awt.geom.RoundRectangle2D.Float(1, 1, Math.max(0,getWidth()-3), Math.max(0,getHeight()-3), 18, 18);
+            gg.setColor(PAPER); gg.fill(shape);
+            gg.setPaint(new TexturePaint(grain, new Rectangle(0, 0, 128, 128))); gg.fill(shape);
+            gg.setColor(EDGE); gg.draw(shape);
+            gg.dispose();
+        }
+    }
+
+    private void styleButton(JButton button) {
+        button.setFont(new Font("SansSerif", Font.BOLD, 13));
+        button.setForeground(INK);
+        button.setBackground(new Color(250, 227, 230));
+        button.setFocusPainted(false);
+        button.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(EDGE), BorderFactory.createEmptyBorder(7, 11, 7, 11)));
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+    }
+
+    // Only the display is changed. The PNG sent to the server keeps its original white background.
+    private void paintOnPaper(Graphics g, BufferedImage image, int x, int y) {
+        BufferedImage display = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_ARGB);
+        int[] pixels = image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0, image.getWidth());
+        for (int i = 0; i < pixels.length; i++) {
+            if ((pixels[i] & 0x00ffffff) == 0x00ffffff) pixels[i] = 0;
+        }
+        display.setRGB(0, 0, image.getWidth(), image.getHeight(), pixels, 0, image.getWidth());
+        g.drawImage(display, x, y, this);
+    }
+
     private class DrawingPanel extends JPanel {
         private int pageIdx;
         public DrawingPanel(int pageIdx) {
             this.pageIdx = pageIdx;
-            setBackground(Color.WHITE);
+            setOpaque(false);
 
             addMouseListener(new MouseAdapter() {
                 @Override
@@ -504,7 +627,7 @@ public class ClientEx extends JFrame {
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
             if (pageIdx < sketchBook.size() && sketchBook.get(pageIdx) != null) {
-                g.drawImage(sketchBook.get(pageIdx), 0, 0, this);
+                paintOnPaper(g, sketchBook.get(pageIdx), 0, 0);
             }
         }
     }
