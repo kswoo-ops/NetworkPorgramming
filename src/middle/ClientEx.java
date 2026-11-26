@@ -11,7 +11,7 @@ import java.util.*;
 import java.util.List;
 
 public class ClientEx extends JFrame {
-    private static final String BACKGROUND_PATH = "/image/mainGameBackground.png";
+    private static final String BACKGROUND_PATH = "mainGameBackground.png";
     private static final Color INK = new Color(76, 53, 83);
     private static final Color PAPER = new Color(250, 241, 215, 205);
     private static final Color EDGE = new Color(173, 142, 125, 180);
@@ -41,25 +41,44 @@ public class ClientEx extends JFrame {
     private JLabel wordLabel;
     
     private JButton passButton;
-    private JButton viewPrevButton;  
-    private JButton goMyPageButton;  
     
     private boolean isGameStarted = false;
     private boolean isWaitingForSwap = false;
     private String myOriginalOwnerId = "TEMP_ID";
     private Color currentDrawColor = Color.BLACK;
-    private String mySecretWord = ""; 
+    private Color penColor = Color.BLACK;
+    private int brushSize = 3;
+    private boolean erasing = false;
+    private String mySecretWord = "";
 
-    // 💡 대기실(LobbyScreen)에서 호출할 수 있도록 인자를 받는 생성자 추가
-    public ClientEx(Socket socket, ObjectOutputStream out, ObjectInputStream in, String myNick) {
+    // UI 테스트용 생성자
+    public ClientEx() {
+        this.myNick = "테스트";
+        this.mySecretWord = "사과";
+        this.isGameStarted = true;
+
+        initUI();
+
+        wordLabel.setText("내 제시어: [사과]");
+        updateUIState();
+    }
+
+    // UI 단독 실행용 main 메서드
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            new ClientEx();
+        });
+    }
+
+    // 기존 생성자 (서버 연동용)
+    public ClientEx(Socket socket, ObjectOutputStream out,
+                    ObjectInputStream in, String myNick) {
         this.socket = socket;
         this.out = out;
         this.in = in;
         this.myNick = myNick;
 
         initUI();
-        
-        // 이미 대기실을 통해 서버에 접속되어 있으므로, 수신 스레드만 곧바로 시작
         startListeningServer();
         updateUIState();
     }
@@ -69,95 +88,89 @@ public class ClientEx extends JFrame {
         setTitle("텔레스트레이션 릴레이 스케치북 [" + (myNick != null ? myNick : "플레이어") + "]");
         setSize(1050, 700);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
-        setContentPane(new JPanel(new BorderLayout(10, 10)) {
-            @Override protected void paintComponent(Graphics g) {
-                super.paintComponent(g);
-                Graphics2D gg = (Graphics2D) g.create();
-                gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-                gg.setPaint(new GradientPaint(0, 0, new Color(211, 177, 224), getWidth(), getHeight(), new Color(250, 207, 219)));
-                gg.fillRect(0, 0, getWidth(), getHeight());
-                if (themeBackground != null) {
-                    double scale = Math.max((double)getWidth()/themeBackground.getWidth(), (double)getHeight()/themeBackground.getHeight());
-                    int w = (int)Math.ceil(themeBackground.getWidth()*scale), h = (int)Math.ceil(themeBackground.getHeight()*scale);
-                    gg.drawImage(themeBackground, (getWidth()-w)/2, (getHeight()-h)/2, w, h, this);
-                }
-                gg.dispose();
-            }
-        });
-        ((JComponent)getContentPane()).setBorder(BorderFactory.createEmptyBorder(14, 18, 14, 18));
-
+        setMinimumSize(new Dimension(1000, 650));
+        BoardPanel board = new BoardPanel();
+        setContentPane(board);
         cardLayout = new CardLayout();
         centerCardPanel = new JPanel(cardLayout);
         centerCardPanel.setOpaque(false);
-        add(centerCardPanel, BorderLayout.CENTER);
-
+        board.add(centerCardPanel, "canvas");
         addNewPageLocally("DRAW", null, "");
 
-        JPanel topPanel = new PaperPanel(new FlowLayout(FlowLayout.CENTER, 10, 12));
-        wordLabel = new JLabel("🎯 내 제시어: [게임 준비 후 공개됩니다]");
+        JPanel topPanel = new PaperPanel(new BorderLayout());
+        wordLabel = new JLabel("내 제시어: [게임 준비 후 공개됩니다]", JLabel.CENTER);
         wordLabel.setFont(new Font("SansSerif", Font.BOLD, 16));
-        wordLabel.setForeground(Color.DARK_GRAY);
-        topPanel.add(wordLabel);
-        add(topPanel, BorderLayout.NORTH);
-
-        JPanel controlPanel = new PaperPanel(new GridLayout(2, 1, 0, 4));
-        JPanel tools = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 3));
-        JPanel actions = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 3));
-        tools.setOpaque(false);
-        actions.setOpaque(false);
-        controlPanel.add(tools);
-        controlPanel.add(actions);
-        
-        JButton blackBtn = new JButton("검정");
-        blackBtn.setForeground(Color.BLACK);
-        JButton redBtn = new JButton("빨강");
-        redBtn.setForeground(Color.RED);
-        JButton blueBtn = new JButton("파랑");
-        blueBtn.setForeground(Color.BLUE);
-
-        blackBtn.addActionListener(e -> { currentDrawColor = Color.BLACK; if (g2d != null) g2d.setColor(currentDrawColor); });
-        redBtn.addActionListener(e -> { currentDrawColor = Color.RED; if (g2d != null) g2d.setColor(currentDrawColor); });
-        blueBtn.addActionListener(e -> { currentDrawColor = Color.BLUE; if (g2d != null) g2d.setColor(currentDrawColor); });
-
-        viewPrevButton = new JButton("📖 앞사람 기록 보기");
-        viewPrevButton.setBackground(new Color(200, 220, 255));
-        viewPrevButton.addActionListener(e -> {
-            if (sketchBook.size() <= 1) {
-                JOptionPane.showMessageDialog(this, "아직 앞사람이 남긴 기록이 없습니다!");
-                return;
-            }
-            viewingPageIndex = (viewingPageIndex > 0) ? viewingPageIndex - 1 : 0;
-            switchPageToView(viewingPageIndex);
-        });
-
-        goMyPageButton = new JButton("✍️ 내 페이지로");
-        goMyPageButton.setBackground(new Color(255, 230, 150));
-        goMyPageButton.addActionListener(e -> {
-            switchPageToView(myCurrentWriteIndex);
-        });
-
-        infoLabel = new JLabel();
-        updateInfoLabel();
-        
-        passButton = new JButton("🔄 이 페이지 작성 완료 및 넘기기");
-        passButton.setEnabled(false);
-        passButton.setBackground(new Color(100, 200, 100));
-
-        tools.add(blackBtn);
-        tools.add(redBtn);
-        tools.add(blueBtn);
-        tools.add(viewPrevButton);
-        tools.add(goMyPageButton); 
-        actions.add(infoLabel);
-        actions.add(passButton);
-        
-        for (JButton b : new JButton[]{blackBtn, redBtn, blueBtn, viewPrevButton, goMyPageButton, passButton}) styleButton(b);
-        blackBtn.setForeground(Color.BLACK);
-        redBtn.setForeground(new Color(180, 48, 68));
-        blueBtn.setForeground(new Color(48, 82, 160));
-        infoLabel.setForeground(INK);
         wordLabel.setForeground(INK);
-        add(controlPanel, BorderLayout.SOUTH);
+        topPanel.add(wordLabel);
+        board.add(topPanel, "topic");
+
+        // 왼쪽: 원래 화면 초안처럼 색상 팔레트 배치
+        JPanel palette = new PaperPanel(new BorderLayout(0, 5));
+        JLabel paletteTitle = new JLabel("색상", JLabel.CENTER);
+        paletteTitle.setForeground(INK);
+        palette.add(paletteTitle, BorderLayout.NORTH);
+        JPanel colors = new JPanel(new GridLayout(5, 3, 4, 4));
+        colors.setOpaque(false);
+        Color[] swatches = { Color.BLACK, Color.GRAY, Color.WHITE,
+            new Color(222, 49, 59), new Color(255, 155, 39), new Color(250, 214, 51),
+            new Color(48, 155, 83), new Color(90, 205, 130), new Color(52, 176, 209),
+            new Color(51, 86, 193), new Color(132, 74, 180), new Color(234, 107, 164),
+            new Color(130, 81, 48), new Color(222, 171, 115), new Color(255, 209, 219) };
+        JPanel preview = new JPanel();
+        preview.setBackground(Color.BLACK);
+        preview.setPreferredSize(new Dimension(20, 24));
+        preview.setBorder(BorderFactory.createLineBorder(EDGE));
+        for (Color color : swatches) {
+            JButton button = new JButton();
+            button.setBackground(color);
+            button.setOpaque(true);
+            button.setContentAreaFilled(true);
+            button.setBorder(BorderFactory.createLineBorder(EDGE));
+            button.setFocusPainted(false);
+            button.setToolTipText(String.format("#%06X", color.getRGB() & 0xffffff));
+            button.addActionListener(e -> {
+                penColor = color; erasing = false; currentDrawColor = color;
+                preview.setBackground(color); updateBrush();
+            });
+            colors.add(button);
+        }
+        palette.add(colors, BorderLayout.CENTER);
+        palette.add(preview, BorderLayout.SOUTH);
+        board.add(palette, "palette");
+
+        infoLabel = new JLabel("", JLabel.CENTER);
+        infoLabel.setForeground(new Color(255, 246, 219));
+        infoLabel.setFont(new Font("SansSerif", Font.BOLD, 13));
+        updateInfoLabel();
+        board.add(infoLabel, "info");
+
+        // 오른쪽 위: 펜/지우개. 오른쪽 아래는 칠판 장식 전용으로 비워 둠.
+        JPanel rightTools = new PaperPanel(new GridLayout(2, 1, 0, 5));
+        JButton pen = new JButton("펜");
+        JButton eraser = new JButton("지우개");
+        styleButton(pen); styleButton(eraser);
+        pen.addActionListener(e -> { erasing = false; currentDrawColor = penColor; updateBrush(); });
+        eraser.addActionListener(e -> { erasing = true; currentDrawColor = Color.WHITE; updateBrush(); });
+        rightTools.add(pen); rightTools.add(eraser);
+        board.add(rightTools, "tools");
+
+        JPanel controlPanel = new PaperPanel(new GridBagLayout());
+        JLabel sizeLabel = new JLabel("굵기"); sizeLabel.setForeground(INK);
+        JSlider brush = new JSlider(1, 24, brushSize);
+        brush.setOpaque(false); brush.setPreferredSize(new Dimension(150, 24));
+        brush.addChangeListener(e -> { brushSize = brush.getValue(); updateBrush(); });
+        passButton = new JButton("제출");
+        passButton.setEnabled(false);
+        styleButton(passButton);
+        GridBagConstraints c = new GridBagConstraints();
+        c.gridy = 0;
+        c.insets = new Insets(0, 6, 0, 6);
+        c.gridx = 0; controlPanel.add(sizeLabel, c);
+        c.gridx = 1; c.weightx = 1; c.fill = GridBagConstraints.HORIZONTAL;
+        controlPanel.add(brush, c);
+        c.gridx = 2; c.weightx = 0; c.fill = GridBagConstraints.NONE;
+        controlPanel.add(passButton, c);
+        board.add(controlPanel, "controls");
 
         passButton.addActionListener(e -> {
             if (!isGameStarted || isWaitingForSwap) return;
@@ -331,9 +344,9 @@ public class ClientEx extends JFrame {
             protected void paintComponent(Graphics g) {
                 super.paintComponent(g);
                 if (img != null) {
-                    int x = (getWidth() - img.getWidth()) / 2;
-                    int y = (getHeight() - img.getHeight()) / 2;
-                    paintOnPaper(g, img, Math.max(0, x), Math.max(0, y));
+                    double scale = Math.min((double)getWidth()/img.getWidth(), (double)getHeight()/img.getHeight());
+                    int w = (int)(img.getWidth()*scale), h = (int)(img.getHeight()*scale);
+                    g.drawImage(img, (getWidth()-w)/2, (getHeight()-h)/2, w, h, this);
                 }
             }
         };
@@ -479,9 +492,9 @@ public class ClientEx extends JFrame {
         
         if ("DRAW".equals(currentType)) {
             canvasImage = sketchBook.get(viewingPageIndex);
+            if (g2d != null) g2d.dispose();
             g2d = canvasImage.createGraphics();
-            g2d.setStroke(new BasicStroke(3, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            g2d.setColor(currentDrawColor);
+            updateBrush();
         }
         
         cardLayout.show(centerCardPanel, "PAGE_" + viewingPageIndex);
@@ -493,7 +506,7 @@ public class ClientEx extends JFrame {
         if (infoLabel != null) {
             boolean isMyTurnPage = (viewingPageIndex == myCurrentWriteIndex);
             String statusStr = isMyTurnPage ? "✍️ 내 작성 칸" : "👀 앞사람 기록 보기 중";
-            infoLabel.setText("📖 페이지 (" + (viewingPageIndex + 1) + "/" + sketchBook.size() + ") [" + statusStr + "]");
+            infoLabel.setText("<html><center>페이지 " + (viewingPageIndex + 1) + " / " + sketchBook.size() + "<br>" + statusStr + "</center></html>");
         }
     }
 
@@ -512,13 +525,66 @@ public class ClientEx extends JFrame {
     }
 
 
+    private void updateBrush() {
+        if (g2d != null) {
+            g2d.setColor(currentDrawColor);
+            g2d.setStroke(new BasicStroke(erasing ? Math.max(12, brushSize * 2) : brushSize,
+                    BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        }
+    }
+
+    // Layout and artwork share the same coordinate system: no background cropping.
+    private class BoardPanel extends JPanel {
+        private final Map<String, Component> regions = new HashMap<>();
+        BoardPanel() { super(null); setBackground(new Color(15, 73, 48)); }
+        @Override protected void addImpl(Component c, Object constraint, int index) {
+            super.addImpl(c, constraint, index);
+            if (constraint instanceof String) regions.put((String) constraint, c);
+        }
+        private Rectangle artwork() {
+            double aspect = themeBackground == null ? 1.55 : (double) themeBackground.getWidth() / themeBackground.getHeight();
+            int w = getWidth(), h = Math.min(getHeight(), (int)Math.round(w / aspect));
+            w = Math.min(w, (int)Math.round(h * aspect));
+            return new Rectangle((getWidth()-w)/2, (getHeight()-h)/2, w, h);
+        }
+        private void place(String key, Rectangle r, double x, double y, double w, double h) {
+            Component c = regions.get(key);
+            if (c != null) c.setBounds(r.x+(int)(r.width*x), r.y+(int)(r.height*y),
+                    (int)(r.width*w), (int)(r.height*h));
+        }
+        @Override public void doLayout() {
+            Rectangle r = artwork();
+            // Top 15%: original logo. Bottom-right: original chalk writing.
+            place("info", r, .025, .15, .145, .09);
+            place("palette", r, .035, .28, .135, .43);
+            place("topic", r, .19, .15, .59, .075);
+            place("canvas", r, .19, .235, .59, .51);
+            place("controls", r, .19, .755, .59, .15);
+            place("tools", r, .81, .24, .16, .19);
+        }
+        @Override protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Rectangle r = artwork();
+            Graphics2D gg = (Graphics2D) g.create();
+            gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            if (themeBackground != null) gg.drawImage(themeBackground, r.x, r.y, r.width, r.height, this);
+            gg.dispose();
+        }
+    }
+
     // Theme assets: project working directory, src/middle, or classpath.
     private BufferedImage loadBackground() {
         String[] fileCandidates = {
                 BACKGROUND_PATH,
                 "src/middle/" + BACKGROUND_PATH,
                 "middle/" + BACKGROUND_PATH,
-                "/mnt/data/ghostwriter_images/context/b28cf400-7bfb-544e-a074-bc0a00305a12.png"
+                "image/" + BACKGROUND_PATH,
+                "src/image/" + BACKGROUND_PATH,
+                "src/middle/image/" + BACKGROUND_PATH,
+                "../image/" + BACKGROUND_PATH,
+                "../src/middle/" + BACKGROUND_PATH,
+                "../../image/" + BACKGROUND_PATH,
+                "../../src/middle/image/" + BACKGROUND_PATH
         };
         for (String path : fileCandidates) {
             try {
@@ -529,7 +595,7 @@ public class ClientEx extends JFrame {
                 }
             } catch (IOException ignored) { }
         }
-        String[] resourceCandidates = {"/" + BACKGROUND_PATH, "/middle/" + BACKGROUND_PATH};
+        String[] resourceCandidates = {"/" + BACKGROUND_PATH, "/middle/" + BACKGROUND_PATH, "/image/" + BACKGROUND_PATH, "/middle/image/" + BACKGROUND_PATH};
         for (String path : resourceCandidates) {
             try (InputStream stream = getClass().getResourceAsStream(path)) {
                 if (stream != null) {
@@ -599,8 +665,8 @@ public class ClientEx extends JFrame {
                 @Override
                 public void mousePressed(MouseEvent e) {
                     if (!isGameStarted || isWaitingForSwap || viewingPageIndex != myCurrentWriteIndex) return;
-                    prevX = e.getX();
-                    prevY = e.getY();
+                    prevX = imageX(e.getX());
+                    prevY = imageY(e.getY());
                 }
                 @Override
                 public void mouseReleased(MouseEvent e) {
@@ -612,7 +678,7 @@ public class ClientEx extends JFrame {
                 @Override
                 public void mouseDragged(MouseEvent e) {
                     if (!isGameStarted || isWaitingForSwap || viewingPageIndex != myCurrentWriteIndex) return;
-                    int x = e.getX(); int y = e.getY();
+                    int x = imageX(e.getX()); int y = imageY(e.getY());
                     if (prevX != -1 && prevY != -1 && g2d != null && viewingPageIndex == pageIdx) {
                         g2d.setColor(currentDrawColor);
                         g2d.drawLine(prevX, prevY, x, y);
@@ -622,13 +688,23 @@ public class ClientEx extends JFrame {
                 }
             });
         }
+        private int imageX(int x) {
+            BufferedImage image = sketchBook.get(pageIdx);
+            return Math.max(0, Math.min(image.getWidth()-1, x * image.getWidth() / Math.max(1, getWidth())));
+        }
+        private int imageY(int y) {
+            BufferedImage image = sketchBook.get(pageIdx);
+            return Math.max(0, Math.min(image.getHeight()-1, y * image.getHeight() / Math.max(1, getHeight())));
+        }
         
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
             if (pageIdx < sketchBook.size() && sketchBook.get(pageIdx) != null) {
-                paintOnPaper(g, sketchBook.get(pageIdx), 0, 0);
+                g.drawImage(sketchBook.get(pageIdx), 0, 0, getWidth(), getHeight(), this);
             }
         }
     }
 }
+
+
