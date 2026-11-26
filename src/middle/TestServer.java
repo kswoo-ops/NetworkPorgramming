@@ -7,11 +7,13 @@ import java.util.*;
 /**
  * 테스트용 임시 서버 (A의 서버가 완성되기 전에 접속·대기실 화면을 확인하기 위한 것)
  * 합의표의 메시지를 그대로 구현: JOIN, PLAYER_READY, PLAYER_UNREADY, CHAT
+ * 방장 기능: 가장 먼저 접속한 사람이 방장. HOST:이름 을 알리고, 방장의 START_GAME 요청이 오면 조건을 확인해 시작한다.
  * 실행: java middle.TestServer
  */
 public class TestServer {
     private static final int PORT = 5000;
     private static final List<Handler> clients = new ArrayList<>();
+    private static Handler host = null;   // 현재 방장 (clients 동기화 구간에서만 바꾼다)
 
     public static void main(String[] args) throws IOException {
         System.out.println("테스트 서버 시작 (port " + PORT + ")");
@@ -33,7 +35,11 @@ public class TestServer {
                 if (sb.length() > 6) sb.append(",");
                 sb.append(h.name).append("=").append(h.ready ? 1 : 0);
             }
-            for (Handler h : clients) if (h.name != null) h.send(sb.toString());
+            for (Handler h : clients) {
+                if (h.name == null) continue;
+                if (host != null) h.send("HOST:" + host.name);
+                h.send(sb.toString());
+            }
         }
     }
 
@@ -72,6 +78,9 @@ public class TestServer {
                         }
                         if (error != null) { send("JOIN_FAIL:" + error); continue; }
                         name = nick;
+                        synchronized (clients) {
+                            if (host == null) host = this;   // 먼저 들어온 사람이 방장
+                        }
                         send("JOIN_OK");
                         System.out.println("접속: " + name);
                         broadcastUsers();
@@ -79,9 +88,11 @@ public class TestServer {
                     } else if (name == null) {
                         continue;                                  // JOIN 전에는 다른 메시지 무시
                     } else if (msg.equals("PLAYER_READY")) {
-                        ready = true; broadcastUsers(); checkStart();
+                        if (this != host) { ready = true; broadcastUsers(); }   // 방장은 준비 대신 시작 버튼을 쓴다
                     } else if (msg.equals("PLAYER_UNREADY")) {
-                        ready = false; broadcastUsers();
+                        if (this != host) { ready = false; broadcastUsers(); }
+                    } else if (msg.equals("START_GAME")) {
+                        tryStart();
                     } else if (msg.startsWith("CHAT:")) {
                         String text = msg.substring(5);
                         synchronized (clients) {
@@ -92,20 +103,40 @@ public class TestServer {
             } catch (Exception e) {
                 // 연결 종료
             } finally {
-                synchronized (clients) { clients.remove(this); }
+                synchronized (clients) {
+                    clients.remove(this);
+                    if (host == this) {                     // 방장이 나가면 다음으로 먼저 접속한 사람에게 넘긴다
+                        host = null;
+                        for (Handler h : clients) {
+                            if (h.name != null) { host = h; h.ready = false; break; }
+                        }
+                        if (host != null) System.out.println("방장 변경: " + host.name);
+                    }
+                }
                 try { socket.close(); } catch (IOException e) { }
                 if (name != null) { System.out.println("퇴장: " + name); broadcastUsers(); }
             }
         }
 
-        // 2명 이상이고 모두 준비면 게임 시작
-        private void checkStart() {
+        // 방장이 시작을 요청했을 때: 방장인지, 2명 이상인지, 방장을 뺀 전원이 준비했는지 확인하고 시작
+        private void tryStart() {
             synchronized (clients) {
+                if (this != host) { send("NOTIFY:방장만 게임을 시작할 수 있습니다."); return; }
                 int n = 0;
-                for (Handler h : clients) if (h.name != null) { n++; if (!h.ready) return; }
+                for (Handler h : clients) if (h.name != null) n++;
                 if (n < 2) { send("NOTIFY:게임을 시작하려면 최소 2명 이상 필요합니다."); return; }
                 for (Handler h : clients) {
-                    if (h.name != null) h.send(new SketchMessage("GAME_START", new ArrayList<byte[]>(), 0, ""));
+                    if (h.name != null && h != host && !h.ready) {
+                        send("NOTIFY:아직 준비하지 않은 참가자가 있습니다.");
+                        return;
+                    }
+                }
+                System.out.println("게임 시작: " + n + "명");
+                for (Handler h : clients) {
+                    if (h.name == null) continue;
+                    SketchMessage start = new SketchMessage("GAME_START", new ArrayList<byte[]>(), 0, h.name);
+                    start.setSecretWord("테스트");   // 테스트 서버용 임시 제시어
+                    h.send(start);
                 }
             }
         }
